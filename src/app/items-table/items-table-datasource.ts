@@ -1,8 +1,8 @@
 import { DataSource } from '@angular/cdk/collections';
 import { MatPaginator } from '@angular/material/paginator';
 import { MatSort } from '@angular/material/sort';
-import { map } from 'rxjs/operators';
-import { Observable, of as observableOf, merge } from 'rxjs';
+import { map, catchError, finalize } from 'rxjs/operators';
+import { Observable, of as observableOf, merge, BehaviorSubject, of } from 'rxjs';
 import { Item } from '../api/models/item';
 import { SafeResourceUrl, DomSanitizer } from '@angular/platform-browser';
 import { ItemsService } from '../api/services/items.service';
@@ -36,9 +36,13 @@ export class ItemsTableDataSource extends DataSource<ItemWrapper> {
   sortedDesc = false;
   data: ItemWrapper[] = [];
 
+  private itemsSubject = new BehaviorSubject<ItemWrapper[]>([]);
+  private loadingSubject = new BehaviorSubject<boolean>(false);
+  public loading$ = this.loadingSubject.asObservable();
+
   constructor(private itemsService: ItemsService, private searchService: SearchService, private domSanitizer: DomSanitizer) {
     super();
-    this.getItems(this.providerName, this.sortedField, this.sortedDesc, this.pageNum, this.itemsPerPage);    
+    this.getItems(this.providerName, this.sortedField, this.sortedDesc, this.pageNum, this.itemsPerPage);
   }
 
   /**
@@ -64,7 +68,10 @@ export class ItemsTableDataSource extends DataSource<ItemWrapper> {
    *  Called when the table is being destroyed. Use this function, to clean up
    * any open connections or free any held resources that were set up during connect.
    */
-  disconnect() {}
+  disconnect() {
+    this.loadingSubject.complete();
+    this.itemsSubject.complete();
+  }
 
   /**
    * Paginate the data (client-side). If you're using server-side pagination,
@@ -95,28 +102,38 @@ export class ItemsTableDataSource extends DataSource<ItemWrapper> {
     });
   }
 
+
   getItems(_providerName: string, _sortedField: string, _sortedDesc: boolean, _pageNum: number, _itemsPerPage: number): void {
-    this.itemsService.getItemsByPage({ providerName: _providerName, sortedField: _sortedField, sortedDesc: _sortedDesc, 
-      pageNum: _pageNum, itemsPerPage: _itemsPerPage })
-      .subscribe(result => this.processResult(result));
+    this.loadingSubject.next(true);
+    this.itemsService.getItemsByPage({
+      providerName: _providerName, sortedField: _sortedField, sortedDesc: _sortedDesc,
+      pageNum: _pageNum, itemsPerPage: _itemsPerPage
+    }).pipe(
+      catchError(() => of([])),
+      finalize(() => this.loadingSubject.next(false))
+  ).subscribe(result => {
+        this.processResult(result);
+        this.itemsSubject.next(this.data);
+        this.loadingSubject.next(false);
+      });
   }
 
   searchItems(_searchWords: string, _maxItems: number, _pageNum: number, _itemsPerPage: number): void {
-    this.searchService.getItemsSearchByPage({ searchWords: _searchWords, maxItems: _maxItems, pageNum: _pageNum, itemsPerPage: _itemsPerPage
+    this.searchService.getItemsSearchByPage({
+      searchWords: _searchWords, maxItems: _maxItems, pageNum: _pageNum, itemsPerPage: _itemsPerPage
     }).subscribe(result => this.processResult(result));
   }
 
-  processResult(result: ItemsPage) {
+  processResult(result: ItemsPage | any) {
     this.data.length = 0;
     result.items.forEach(item => {
       const itemWrapper = new ItemWrapper();
       itemWrapper.item = item;
       itemWrapper.safeImage = this.domSanitizer.bypassSecurityTrustUrl('data:image/jpg;base64,' + item.image64BaseStr);
       this.data.push(itemWrapper);
-      console.log('processed result');
     });
     this.totalCount = result.totalCount;
-    this.totalPages = Math.ceil(this.totalCount / this.itemsPerPage);  
+    this.totalPages = Math.ceil(this.totalCount / this.itemsPerPage);
   }
 }
 
